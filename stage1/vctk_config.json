@@ -1,0 +1,17 @@
+{
+  "epoches":5000,
+  "saved_checkpoint":10000,
+  "evaluate_epoch":5000,
+  "dist_backend":"nccl",
+  "dist_url":"xxx.xxx.xxx.xxx",
+  "dist_port":"11348",
+  "dist_world_size":1,
+  "cudnn_enabled":true,
+  "cudnn_benchmark":false,
+
+  "sampling_rate":16000,
+  "initial_lr":5e-3,
+  "lr_decay":0.999,
+  "batch_size":6
+  
+}
