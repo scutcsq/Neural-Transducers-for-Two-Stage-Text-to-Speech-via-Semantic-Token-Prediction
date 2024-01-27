@@ -1,0 +1,28 @@
+{
+  "dist_backend":"nccl",
+  "dist_url":"xxx.xxx.xxx.xxx",
+  "dist_port":"11348",
+  "dist_world_size":1,
+  "cudnn_enabled":true,
+  "cudnn_benchmark":false,
+
+  "sampling_rate":16000,
+  "filter_length":200,
+  "segment_size":16000,
+  "hop_length":160,
+  "win_length":200,
+  "n_mel_channels":80,
+  "mel_fmin":0
+  "mel_fmax":8000,
+  "c_mel":45,
+  "c_kl":1,
+  
+  "initial_lr":5e-3,
+  "betas":[0.8, 0.99],
+  "epochs":5000, 
+  "log_interval":1000,
+  "eval_interval":10000,
+  "fp16_run":false,
+  "lr_decay":0.999875,
+  "batch_size":64
+}
