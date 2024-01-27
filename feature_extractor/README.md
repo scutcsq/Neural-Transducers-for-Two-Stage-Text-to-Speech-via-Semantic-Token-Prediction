@@ -16,7 +16,7 @@ Utilizing ffmpeg to resample the VCTK audio from 48k to 16k.
 python renormalize.py
 ```
 
-## Step 2: extract wav2vec 2.0 features
+## Step 2: extract wav2vec 2.0 features and Melspectrogram features
 
 ```
 python w2vextractor.py
