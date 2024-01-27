@@ -2,7 +2,7 @@ import joblib
 import os
 import numpy as np
 import kaldiio
-km_path = r'/148Dataset/data-chen.shuaiqi/Transducer/km.bin'
+km_path = r'km.bin'
 kmeans_model = joblib.load(open(km_path, 'rb'))
 # centers = kmeans_model.cluster_centers
 
