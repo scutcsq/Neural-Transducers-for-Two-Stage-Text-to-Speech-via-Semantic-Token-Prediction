@@ -1,3 +1,4 @@
+from tkinter import Scale
 import torch
 import torch.nn as nn
 import numpy as np
@@ -6,25 +7,35 @@ from conformer import Conformer
 from ref_enc import ECAPA_TDNN as ReferenceEncoder
 import torch.nn.functional as F
 from torch import Tensor
+import ice_conformer.conformer as conformer
+from ice_conformer.scaling import ScaledLinear, ScaledEmbedding
+import k2
 class TextEncoder(nn.Module):
     def __init__(self, 
                  in_dim : 384, 
-                 n_text : 512):
+                 n_text : 512,
+                 layer_nums:int = 6):
         super().__init__()
-        self.conformer = Conformer( 
-                  encoder_dim = in_dim, 
-                  conv_kernel_size = 5,
-                  num_encoder_layers = 6)
-        
-        self.embedding = nn.Embedding(n_text,
+        # self.conformer = Conformer( 
+        #           encoder_dim = in_dim, 
+        #           conv_kernel_size = 5,
+        #           num_encoder_layers = 6)
+        self.conformer = conformer.Conformer(num_features = in_dim,
+                                   d_model = in_dim,
+                                   cnn_module_kernel = 5,
+                                   dim_feedforward = int(in_dim * 4),
+                                   num_encoder_layers = layer_nums)
+
+        self.embedding = ScaledEmbedding(n_text,
                                         in_dim)
-        self.inner_size = 513
-        self.fc = nn.Linear(in_dim, self.inner_size)
-    def forward(self, x):
+        
+        
+    def forward(self, x, x_lens, warmup = 1.0):
         x = self.embedding(x)
-        x = self.conformer(x)
-        x = self.fc(x)
-        return x
+        layer_results, x_lens = self.conformer(x, x_lens, warmup = warmup)
+        encoder_out = layer_results[-1]
+        # print('encoder: ', encoder_out.shape)
+        return encoder_out
     
 
 ## Prediction Network
@@ -35,13 +46,15 @@ class PredictionEncoder(nn.Module):
                  n_token = 512):
         super().__init__()
         self.lstm = nn.LSTM(batch_first = True, input_size = in_dim, hidden_size = hid_dim, num_layers = 2, bidirectional = False)
-        self.embedding = nn.Embedding(n_token, in_dim)
+        self.embedding = ScaledEmbedding(n_token, in_dim)
         self.inner_size = 513
-        self.fc = nn.Linear(hid_dim, self.inner_size)
+        self.relu = nn.ReLU()
+        # self.fc = nn.Linear(hid_dim, self.inner_size)
     def forward(self, x):
         x = self.embedding(x)
         x, y  = self.lstm(x)
-        x = self.fc(x)
+        x = self.relu(x)
+        # x = self.fc(x)
         return x, y
     def inference(self, x, hidden=None):
         x = self.embedding(x)
@@ -49,7 +62,8 @@ class PredictionEncoder(nn.Module):
             x, hidden = self.lstm(x)
         else:
             x, hidden = self.lstm(x, hidden)
-        x = self.fc(x)
+        x = self.relu(x)
+        # x = self.fc(x)
         return x, hidden
 
 
@@ -62,7 +76,8 @@ class PredictionEncoder(nn.Module):
 class AffineLinear(nn.Module):
     def __init__(self, in_dim, out_dim):
         super(AffineLinear, self).__init__()
-        affine = nn.Linear(in_dim, out_dim)
+        # affine = nn.Linear(in_dim, out_dim)
+        affine = ScaledLinear(in_dim, out_dim)
         self.affine = affine
 
     def forward(self, input):
@@ -97,11 +112,13 @@ class JointStyleBlock(nn.Module):
                  audio_size: int = 512,
                  ):
         super().__init__()
-        self.fc = nn.Linear(ref_size, ref_size)
+        self.fc = ScaledLinear(ref_size, ref_size)
         self.ln = StyleAdaptiveLayerNorm(ref_size, audio_size)
+        self.tanh = nn.Tanh()
     def forward(self, x, ref_audio):
         x1 = self.ln(x, ref_audio)
         x1 = self.fc(x1)
+        x1 = self.tanh(x1)
         return x + x1
 
 class JointStyleNet(nn.Module):
@@ -110,98 +127,154 @@ class JointStyleNet(nn.Module):
                  audio_size: int = 512,
                  num_layers: int = 3):
         super().__init__()
-        
-        self.layers = nn.ModuleList([JointStyleBlock(int(ref_size * 2), audio_size)
+        # self.layers = nn.ModuleList([nn.Sequential(StyleAdaptiveLayerNorm(ref_size, audio_size),
+        #                                            nn.Linear(ref_size, ref_size))
+        #                                            for _ in range(num_layers)])
+        # self.fc = nn.Linear()
+        self.layers = nn.ModuleList([JointStyleBlock(ref_size, audio_size)
                                      for _ in range(num_layers)])
     def forward(self, x, ref_audio):
         for layer in self.layers:
             x = layer(x, ref_audio)
         return x
     
+
+
 class JointNet(nn.Module):
     def __init__(self,
-                 num_vocabs:int,
-                 output_size:int = 1024,
-                 inner_size:int = 512,
-                 text_size:int = 512,
-                 label_size:int = 512,
-                 refer_size:int = 512):
+                 encoder_dim:int = 384,
+                 decoder_dim:int = 512,
+                 reference_dim:int = 512,
+                 joint_dim:int = 512,
+                 hidden_dim:int = 2048,
+                 vocab_size: int = 513
+                 ):
         super().__init__()
-        self.fc1 = nn.Linear(text_size, inner_size)
-        self.fc2 = nn.Linear(label_size, inner_size)
-        self.fc3 = nn.Linear(int(inner_size * 2), output_size)
-        self.fc4 = nn.Linear(output_size, num_vocabs)
+        self.encoder_proj = ScaledLinear(encoder_dim, joint_dim)
+        self.decoder_proj = ScaledLinear(decoder_dim, joint_dim)
         self.tanh = nn.Tanh()
-        self.jointstylenet = JointStyleNet(inner_size, refer_size)
-        self.bos_token = [0]
-        self.eos_token = [-1]
-        self.pad_token = [-2]
-        # reference_emb = self.refencoder(reference_audio)
-        self.refencoder = ReferenceEncoder(hid_C = int(refer_size * 2), out_C = inner_size)
-    def forward(self, text, label, reference):
-        
-        # text = self.fc1(text)
-        # label = self.fc2(label)
-        reference = self.refencoder(reference)
-        if text.dim() == 3 and label.dim() == 3:
-            seq_lens = text.size(1)
-            tar_lens = label.size(1)
+        self.relu = nn.ReLU()
+        self.hidden_liner = ScaledLinear(joint_dim, hidden_dim)
+        # self.output_linear = ScaledLinear(hidden_dim, vocab_size)
+        self.output_linear = ScaledLinear(joint_dim, vocab_size)
+        self.jointstylenet = JointStyleNet(joint_dim, reference_dim)
+        self.refencoder = ReferenceEncoder(hid_C = int(reference_dim * 2), out_C = reference_dim)
+    def forward(self, encoder, decoder, reference, if_pro = True):
+        # print('jointnet: encoder: ', encoder.shape, ' decoder: ', decoder.shape)
+        if if_pro == True:
+            encoder_out = self.encoder_proj(encoder)
+            decoder_out = self.decoder_proj(decoder)
+        else:
+            encoder_out = encoder
+            decoder_out = decoder
+        reference_out = self.refencoder(reference)
+        if encoder_out.dim() == 3 and decoder_out.dim() == 3:
+            seq_lens = encoder_out.size(1)
+            tar_lens = decoder_out.size(1)
             
-            text = text.unsqueeze(2)
-            label = label.unsqueeze(1)
+            encoder_out = encoder_out.unsqueeze(2)
+            decoder_out = decoder_out.unsqueeze(1)
 
-            text = text.repeat(1, 1, tar_lens, 1)
-            label = label.repeat(1, seq_lens, 1, 1)
-        
-        hidden = torch.cat((text, label), dim = -1)
-        hidden = self.jointstylenet(hidden, reference)
-        
-        out = self.fc3(hidden)
-        out = self.tanh(out)
-        out = self.fc4(out)
-        out = F.log_softmax(out, dim = -1)
-        return out
+            encoder_out = encoder_out.repeat(1, 1, tar_lens, 1)
+            decoder_out = decoder_out.repeat(1, seq_lens, 1, 1)
+        logit = encoder_out + decoder_out
+        # print('logits: ', logit.shape)
+        # print('reference: ', reference_out.shape)
+        logit = self.jointstylenet(logit, reference_out)
+
+        logit = self.output_linear(self.tanh(logit))
+        return logit
 
 class Stage1Net(nn.Module):
     def __init__(self,
-                 text_dim,
-                 num_vocabs,
-                 num_phonemes,
-                 token_dim,
-                 hid_token_dim,
-                 inner_dim,
-                 ref_dim,
-                 out_dim):
+                 text_dim:int = 384,
+                 num_vocabs:int = 513,
+                 num_phonemes:int = 512,
+                 token_dim:int = 512,
+                 hid_token_dim:int = 512,
+                 inner_dim:int = 512,
+                 ref_dim:int = 512,
+                 layer_nums= 6):
         super().__init__()
         self.textencoder = TextEncoder(text_dim,
-                                       num_phonemes)
+                                       num_phonemes,
+                                       layer_nums = layer_nums)
         self.tokenencoder = PredictionEncoder(token_dim,
                                               hid_token_dim,
                                               num_vocabs,
                                               )
         self.refencoder = ReferenceEncoder(hid_C = ref_dim, out_C = inner_dim)
-        self.JointNet = JointNet(num_vocabs,
-                                 out_dim,
-                                 inner_dim,
-                                 text_dim,
-                                 hid_token_dim,
-                                 ref_dim,
-                                 )
+        self.jointer = JointNet()
+        encoder_dim = 384
+        decoder_dim = 512
+        self.simple_token_proj = ScaledLinear(decoder_dim, num_vocabs)
+        self.simple_phone_proj = ScaledLinear(encoder_dim, num_vocabs)
     def forward(self,
                 text_seq: Tensor,
                 token_seq: Tensor,
-                reference_audio: Tensor
+                text_lens: Tensor,
+                token_lens: Tensor,
+                reference_audio: Tensor,
+                true_seq: Tensor,
+                lm_scale: float = 0.25,
+                am_scale: float = 0.0,
+                prune_range: int = 50,
+                warmup: float = 1.0,
+                reduction: str = 'none',
+                
                 ):
-        text_seq = self.textencoder(text_seq)
+        text_seq = self.textencoder(text_seq, text_lens, warmup)
         token_seq, _  = self.tokenencoder(token_seq)
-        out = self.JointNet(text_seq, token_seq, reference_audio)
-        return out, text_seq, token_seq
+        
+        boundary = torch.zeros((text_seq.size(0), 4), dtype = torch.int64, device = text_seq.device)
+        boundary[:, 2] = token_lens
+        boundary[:, 3] = text_lens
+        lm = self.simple_token_proj(token_seq)
+        am = self.simple_phone_proj(text_seq)
+        with torch.cuda.amp.autocast(enabled=False):
+            simple_loss, (px_grad, py_grad)  = k2.rnnt_loss_smoothed(
+                lm = lm.float(),
+                am = am.float(),
+                symbols = true_seq,
+                termination_symbol = 0,
+                lm_only_scale = lm_scale,
+                am_only_scale = am_scale,
+                return_grad = True,
+                reduction = reduction
+            )
+        ranges = k2.get_rnnt_prune_ranges(
+            px_grad = px_grad,
+            py_grad = py_grad,
+            boundary = boundary,
+            s_range = prune_range,
+        )
+        
+        am_pruned, lm_pruned = k2.do_rnnt_pruning(
+            am = self.jointer.encoder_proj(text_seq),
+            lm = self.jointer.decoder_proj(token_seq),
+            ranges = ranges
+        )
+
+        logits = self.jointer(am_pruned, lm_pruned, reference_audio, if_pro = False)
+        with torch.cuda.amp.autocast(enabled=False):
+            pruned_loss = k2.rnnt_loss_pruned(
+                logits = logits.float(),
+                symbols = true_seq,
+                ranges = ranges,
+                termination_symbol = 0,
+                boundary = boundary,
+                reduction = reduction
+            )
+        
+        
+        return simple_loss, pruned_loss
     
     @torch.no_grad()
     def decode(self, 
                text_outputs: Tensor,
                max_lens: int,
-               reference_emb: Tensor):
+               reference_emb: Tensor,
+               max_token_lens: int = 2048):
         batch = text_outputs.size(0)
         y_hats = list()
         targets = torch.LongTensor([0] * batch).to(text_outputs.device)
@@ -209,14 +282,16 @@ class Stage1Net(nn.Module):
         time_num = 0
         for i in range(int(max_lens)):
             pred = -1
-            text_output = text_outputs[:, i, :].unsqueeze(1)
             while(pred != 0):
                 if time_num == 0:
                     label_output, hidden = self.tokenencoder.inference(targets)
                 else:
                     label_output, hidden = self.tokenencoder.inference(targets, hidden)
-                
-                output = self.JointNet(text_output, label_output, reference_emb)
+                # print('result: ', hidden[0].shape)
+                text_output = text_outputs[:, i, :].unsqueeze(1)
+                # print('text_output: ', text_output.shape, 'label_output: ', label_output.shape)
+                output = self.jointer(text_output, label_output, reference_emb)
+                output = F.log_softmax(output, dim = -1)
                 output = output.squeeze(1).squeeze(1)
                 
                 top_k_output_values, top_k_output_indices = torch.topk(output, k = 5, dim = -1)
@@ -224,20 +299,27 @@ class Stage1Net(nn.Module):
                 
                 normed_top_k_output_values = top_k_output_values / sum_values.unsqueeze(-1)
                 choosed_indices = torch.multinomial(normed_top_k_output_values, num_samples=1)
-                
+                # print('choosed_indices: ', choosed_indices, choosed_indices.shape)
                 targets = top_k_output_indices[0, choosed_indices]
-                
+                # print('targets:', targets, targets.shape)
                 pred = targets
+                # pred = output.max(1)[1]
+                # targets = output.max(1)[1]
                 time_num += 1
                 if pred == 0:
                     break
                 else:
                     y_hats.append(targets[0,:])
+                if time_num >max_token_lens:
+                    break
+            if time_num > max_token_lens:
+                break
         y_hats = torch.stack(y_hats, dim = 1)
+        
         return y_hats
-                 
     @torch.no_grad()
     def recognize(self, inputs, input_lens, reference_audio):
         text_outputs = self.textencoder(inputs)
         max_lens, _  = torch.max(input_lens, dim = -1)
+        
         return self.decode(text_outputs, max_lens, reference_audio)
