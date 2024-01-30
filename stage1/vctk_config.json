@@ -12,6 +12,7 @@
   "sampling_rate":16000,
   "initial_lr":5e-3,
   "lr_decay":0.999,
-  "batch_size":6
+  "batch_size":64,
+  "use_fp16":false
   
 }
