@@ -34,6 +34,7 @@ class TextEncoder(nn.Module):
         x = self.embedding(x)
         layer_results, x_lens = self.conformer(x, x_lens, warmup = warmup)
         encoder_out = layer_results[-1]
+        encoder_out = F.relu(encoder_out)
         # print('encoder: ', encoder_out.shape)
         return encoder_out
     
@@ -59,7 +60,9 @@ class PredictionEncoder(nn.Module):
     def inference(self, x, hidden=None):
         x = self.embedding(x)
         if hidden is None:
-            x, hidden = self.lstm(x)
+            h0 = torch.zeros(self.num_layers, x.shape[0], self.hid_dim).to(x.device)
+            c0 = torch.zeros(self.num_layers, x.shape[0], self.hid_dim).to(x.device)
+            x, hidden = self.lstm(x, (h0, c0))
         else:
             x, hidden = self.lstm(x, hidden)
         x = self.relu(x)
@@ -150,14 +153,14 @@ class JointNet(nn.Module):
                  vocab_size: int = 513
                  ):
         super().__init__()
-        self.encoder_proj = ScaledLinear(encoder_dim, joint_dim)
-        self.decoder_proj = ScaledLinear(decoder_dim, joint_dim)
+        self.encoder_proj = ScaledLinear(encoder_dim, vocab_size)
+        self.decoder_proj = ScaledLinear(decoder_dim, vocab_size)
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU()
         self.hidden_liner = ScaledLinear(joint_dim, hidden_dim)
-        # self.output_linear = ScaledLinear(hidden_dim, vocab_size)
-        self.output_linear = ScaledLinear(joint_dim, vocab_size)
-        self.jointstylenet = JointStyleNet(joint_dim, reference_dim)
+        self.output_linear = ScaledLinear(hidden_dim, vocab_size)
+        # self.output_linear = ScaledLinear(joint_dim, vocab_size)
+        self.jointstylenet = JointStyleNet(vocab_size, reference_dim)
         self.refencoder = ReferenceEncoder(hid_C = int(reference_dim * 2), out_C = reference_dim)
     def forward(self, encoder, decoder, reference, if_pro = True):
         # print('jointnet: encoder: ', encoder.shape, ' decoder: ', decoder.shape)
@@ -181,8 +184,8 @@ class JointNet(nn.Module):
         # print('logits: ', logit.shape)
         # print('reference: ', reference_out.shape)
         logit = self.jointstylenet(logit, reference_out)
-
-        logit = self.output_linear(self.tanh(logit))
+        logit = self.hidden_linear(self.tanh(logit))
+        logit = self.output_linear(self.relu(logit))
         return logit
 
 class Stage1Net(nn.Module):
@@ -295,9 +298,7 @@ class Stage1Net(nn.Module):
                 output = output.squeeze(1).squeeze(1)
                 
                 top_k_output_values, top_k_output_indices = torch.topk(output, k = 5, dim = -1)
-                sum_values = torch.sum(top_k_output_values, dim = -1)
-                
-                normed_top_k_output_values = top_k_output_values / sum_values.unsqueeze(-1)
+                normed_top_k_output_values = F.log_softmax(top_k_output_values, dim = -1)
                 choosed_indices = torch.multinomial(normed_top_k_output_values, num_samples=1)
                 # print('choosed_indices: ', choosed_indices, choosed_indices.shape)
                 targets = top_k_output_indices[0, choosed_indices]
