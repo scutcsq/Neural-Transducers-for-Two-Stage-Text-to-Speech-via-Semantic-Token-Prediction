@@ -9,7 +9,7 @@ import torch.distributed as dist
 from warnings import simplefilter
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
-
+from optim import Eden, Eve
 from stage1 import Stage1Net
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel
@@ -137,11 +137,11 @@ def train(rank, args, hparams):
         model = DistributedDataParallel(model, device_ids=[rank],find_unused_parameters=True).to(device)
         
     #optimizer
-    optimizer = torch.optim.AdamW(params = model.parameters(),
-                                  lr = initial_lr,
-                                  betas=[0.9, 0.98],
-                                  amsgrad = True)
-    
+    # optimizer = torch.optim.AdamW(params = model.parameters(),
+    #                               lr = initial_lr,
+    #                               betas=[0.9, 0.98],
+    #                               amsgrad = True)
+    optimizer = Eve(model.parameters(), lr = initial_lr)
     if args.checkpoint_path is not None:
         optimizer.load_state_dict(checkpoint_dict['optimizer'])
     
@@ -154,7 +154,9 @@ def train(rank, args, hparams):
     #     last_epoch=epoch_offset
     # )    
     
-    scheduler_g = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer = optimizer, T_0 = 10, T_mult = 2, eta_min = 0)
+    # scheduler_g = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer = optimizer, T_0 = 10, T_mult = 2, eta_min = 0)
+    scheduler = Eden(optimizer, 5000, 6)
+    scaler = GradScaler(enabled = hparams.use_fp16)
     model.train()
     accumulation_step = 64
     count_step = 1
@@ -184,53 +186,14 @@ def train(rank, args, hparams):
             mels = mels.to(device).float()
 
             
-            boundary = torch.zeros((phone_padded.size(0), 4), dtype = torch.int64).to(device)
-            # print('token_padded: ', token_padded.shape[1], 'phone_padded: ', phone_padded.shape[1])
-            boundary[:, 2] = token_seq_len
-            boundary[:, 3] = phone_seq_len
-            
-            
-            
-            result, texts, tokens = model(phone_padded, token_padded, mels)
-            
-            # print('tokens:', tokens.shape)
-            # print('text: ', texts.shape)
-            simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
-                lm = tokens,
-                am = texts,
-                symbols = token_padded[:, 1:],
-                # symbols = token_padded,
-                termination_symbol = termination_symbol,
-                lm_only_scale = 0.25,
-                am_only_scale = 0.0,
-                boundary = boundary,
-                reduction = 'none',
-                return_grad = True
-            )
-            s_range = 50
-
-            ranges = k2.get_rnnt_prune_ranges(
-                px_grad = px_grad,
-                py_grad = py_grad,
-                boundary = boundary,
-                s_range = s_range
-            )
-            texts_pruned, token_pruned = k2.do_rnnt_pruning(am = texts, lm = tokens, ranges = ranges)
-            
-            if args.num_gpus > 1:
-                logits = model.module.JointNet(texts_pruned, token_pruned, mels)
-            else:
-                logits = model.JointNet(texts_pruned, token_pruned, mels)
-            # print('logits: ', logits.shape)
-            pruned_loss = k2.rnnt_loss_pruned(
-                logits = logits,
-                symbols = token_padded[:, 1:],
-                # symbols = token_padded,
-                boundary = boundary,
-                ranges = ranges,
-                termination_symbol = termination_symbol,
-                reduction = 'none'
-            )
+            warmup = 1.0
+            simple_loss, pruned_loss = model(phone_padded,
+                                             token_padded,
+                                             phone_seq_len,
+                                             token_seq_len,
+                                             mels,
+                                             token_padded[:, 1:],
+                                             warmup = warmup)
             # pruned_loss.backward()
             simple_loss_is_finite = torch.isfinite(simple_loss)
             pruned_loss_is_finite = torch.isfinite(pruned_loss)
@@ -253,23 +216,27 @@ def train(rank, args, hparams):
             loss = pruned_loss + 0.5 * simple_loss
             show_loss = loss.clone()
             
-            loss /= accumulation_step
-
+            
+            
             epoch_loss += loss
 
-            loss.backward()
+            scaler.scale(loss).backward()
+            scheduler.step_batch(iteration)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
             
-            if ((iteration+1) % accumulation_step) == 0:
+            
+            # if ((iteration+1) % accumulation_step) == 0:
                 # torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-                optimizer.step()
-                optimizer.zero_grad()
-                batch_num += 1
-                accum_iteration += 1
-                if rank == 0:
-                    timeduration = time.perf_counter() - start
-                    pbar.set_description(
-                        "Train {} total_loss{:.4f}".format(accum_iteration, show_loss.item()
-                    ))
+                
+            batch_num += 1
+            accum_iteration += 1
+            if rank == 0:
+                timeduration = time.perf_counter() - start
+                pbar.set_description(
+                    "Train {} total_loss{:.4f}".format(accum_iteration, show_loss.item()
+                ))
 
             if rank == 0 and (iteration % hparams.saved_checkpoint) == 0:
                 print('save checkpint...')
