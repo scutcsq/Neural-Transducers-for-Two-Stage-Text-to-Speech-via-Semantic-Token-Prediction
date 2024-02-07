@@ -23,7 +23,7 @@ This project will be updated slowly.
 
 ### Features
 
-wav2vec2.0-XLSR (https://github.com/facebookresearch/fairseq/tree/main/examples/wav2vec)
+[wav2vec2.0-XLSR](https://huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft)
 
 ### k2 installation
 
