@@ -17,7 +17,7 @@ This project will be updated slowly.
 
 ### Corpus
 
-[VCTK] (https://datashare.ed.ac.uk/handle/10283/2651)
+[VCTK](https://datashare.ed.ac.uk/handle/10283/2651)
 
 [LibriTTS](https://www.openslr.org/60/)
 
