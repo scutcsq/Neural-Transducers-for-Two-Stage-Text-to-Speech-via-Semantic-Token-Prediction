@@ -4,10 +4,13 @@
 
 This project will be updated slowly.
 
+# To Do List
+
 - [ ] Resolve the convergence issue in the first stage of model training
+- [ ] Dynamic Batch Training
 - [x] Finish the second stage of model training
 - [x] Finish the token extraction by K-means model
-- [ ] Reproduce the model on LibriTTS
+- [x] Reproduce the model on LibriTTS
 
 ## Device
 
