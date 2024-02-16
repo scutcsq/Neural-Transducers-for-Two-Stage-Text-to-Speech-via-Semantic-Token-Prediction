@@ -175,7 +175,7 @@ class JointNet(nn.Module):
             seq_lens = encoder_out.size(1)
             tar_lens = decoder_out.size(1)
             
-            encoder_out = encoder_out.unsqueeze(2)
+            encoder_out = encoder_out.unsqueeze(1)
             decoder_out = decoder_out.unsqueeze(1)
 
             encoder_out = encoder_out.repeat(1, 1, tar_lens, 1)
