@@ -35,3 +35,5 @@ https://k2-fsa.github.io/k2/installation/index.html
 ## Citation
 
 Kim M, Jeong M, Choi B J, et al. Utilizing Neural Transducers for Two-Stage Text-to-Speech via Semantic Token Prediction[J]. arXiv preprint arXiv:2401.01498, 2024.
+
+Kim M, Jeong M, Choi B J, et al. Transduce and speak: Neural transducer for text-to-speech with semantic token prediction[C]//2023 IEEE Automatic Speech Recognition and Understanding Workshop (ASRU). IEEE, 2023: 1-7.
