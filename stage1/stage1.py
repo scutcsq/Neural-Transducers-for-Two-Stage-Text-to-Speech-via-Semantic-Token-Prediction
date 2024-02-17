@@ -50,12 +50,16 @@ class PredictionEncoder(nn.Module):
         self.embedding = ScaledEmbedding(n_token, in_dim)
         self.inner_size = 513
         self.relu = nn.ReLU()
+        self.fc = ScaledLinear(hid_dim, hid_dim)
         # self.fc = nn.Linear(hid_dim, self.inner_size)
     def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.shape[0], self.hid_dim).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.shape[0], self.hid_dim).to(x.device)
         x = self.embedding(x)
-        x, y  = self.lstm(x)
+        x, y  = self.lstm(x, (h0, c0))
+        # x = self.relu(x)
+        x = self.fc(x)
         x = self.relu(x)
-        # x = self.fc(x)
         return x, y
     def inference(self, x, hidden=None):
         x = self.embedding(x)
@@ -65,6 +69,7 @@ class PredictionEncoder(nn.Module):
             x, hidden = self.lstm(x, (h0, c0))
         else:
             x, hidden = self.lstm(x, hidden)
+        x = self.fc(x)
         x = self.relu(x)
         # x = self.fc(x)
         return x, hidden
@@ -85,6 +90,7 @@ class AffineLinear(nn.Module):
 
     def forward(self, input):
         return self.affine(input)
+        
 class StyleAdaptiveLayerNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
         super(StyleAdaptiveLayerNorm, self).__init__()
@@ -109,19 +115,58 @@ class StyleAdaptiveLayerNorm(nn.Module):
         out = gamma * out + beta
         return out
 
+class Conditional_LayerNorm(nn.Module):
+
+    def __init__(self,
+                normal_shape: int = 513,
+                epsilon: int = 1e-5
+                ):
+        # from https://github.com/tuanh123789/AdaSpeech/blob/main/model/adaspeech_modules.py line 162
+        super(Conditional_LayerNorm, self).__init__()
+        if isinstance(normal_shape, int):
+            self.normal_shape = normal_shape
+        self.speaker_embedding_dim = 513
+        self.epsilon = epsilon
+        self.W_scale = nn.Linear(self.speaker_embedding_dim, self.normal_shape)
+        self.W_bias = nn.Linear(self.speaker_embedding_dim, self.normal_shape)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        torch.nn.init.constant_(self.W_scale.weight, 0.0)
+        torch.nn.init.constant_(self.W_scale.bias, 1.0)
+        torch.nn.init.constant_(self.W_bias.weight, 0.0)
+        torch.nn.init.constant_(self.W_bias.bias, 0.0)
+    
+    def forward(self, x, speaker_embedding):
+        mean = x.mean(dim=-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(dim=-1, keepdim=True)
+        std = (var + self.epsilon).sqrt()
+        y = (x - mean) / std
+        scale = self.W_scale(speaker_embedding)
+        bias = self.W_bias(speaker_embedding)
+        y *= scale.unsqueeze(1).unsqueeze(1)
+        y += bias.unsqueeze(1).unsqueeze(1)
+
+        return y
+
+
 class JointStyleBlock(nn.Module):
     def __init__(self,
                  ref_size: int = 512,
                  audio_size: int = 512,
                  ):
         super().__init__()
-        self.fc = ScaledLinear(ref_size, ref_size)
+        self.fc = ScaledLinear(ref_size, int(ref_size) * 2)
+        self.fc2 = ScaledLinear(int(ref_size) * 2, ref_size)
         self.ln = StyleAdaptiveLayerNorm(ref_size, audio_size)
+        # self.ln = Conditional_LayerNorm()
         self.tanh = nn.Tanh()
+        self.relu = nn.ReLU()
     def forward(self, x, ref_audio):
         x1 = self.ln(x, ref_audio)
         x1 = self.fc(x1)
-        x1 = self.tanh(x1)
+        x1 = self.relu(x1)
+        x1 = self.fc2(x1)
         return x + x1
 
 class JointStyleNet(nn.Module):
@@ -157,9 +202,9 @@ class JointNet(nn.Module):
         self.decoder_proj = ScaledLinear(decoder_dim, vocab_size)
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU()
-        self.hidden_liner = ScaledLinear(joint_dim, hidden_dim)
-        self.output_linear = ScaledLinear(hidden_dim, vocab_size)
-        # self.output_linear = ScaledLinear(joint_dim, vocab_size)
+        # self.hidden_liner = ScaledLinear(joint_dim, hidden_dim)
+        # self.output_linear = ScaledLinear(hidden_dim, vocab_size)
+        self.output_linear = ScaledLinear(joint_dim, vocab_size)
         self.jointstylenet = JointStyleNet(vocab_size, reference_dim)
         self.refencoder = ReferenceEncoder(hid_C = int(reference_dim * 2), out_C = reference_dim)
     def forward(self, encoder, decoder, reference, if_pro = True):
@@ -178,14 +223,16 @@ class JointNet(nn.Module):
             encoder_out = encoder_out.unsqueeze(1)
             decoder_out = decoder_out.unsqueeze(1)
 
-            encoder_out = encoder_out.repeat(1, 1, tar_lens, 1)
-            decoder_out = decoder_out.repeat(1, seq_lens, 1, 1)
+            encoder_out = encoder_out.repeat(1, tar_lens, 1, 1)
+            decoder_out = decoder_out.repeat(1, 1, seq_lens, 1)
         logit = encoder_out + decoder_out
         # print('logits: ', logit.shape)
         # print('reference: ', reference_out.shape)
         logit = self.jointstylenet(logit, reference_out)
-        logit = self.hidden_linear(self.tanh(logit))
         logit = self.output_linear(self.relu(logit))
+        logit = F.log_softmax(logit, -1)
+        # logit = self.hidden_linear(self.tanh(logit))
+        # logit = self.output_linear(self.relu(logit))
         return logit
 
 class Stage1Net(nn.Module):
@@ -220,7 +267,7 @@ class Stage1Net(nn.Module):
                 reference_audio: Tensor,
                 true_seq: Tensor,
                 lm_scale: float = 0.25,
-                am_scale: float = 0.0,
+                am_scale: float = 0.25,
                 prune_range: int = 50,
                 warmup: float = 1.0,
                 reduction: str = 'none',
