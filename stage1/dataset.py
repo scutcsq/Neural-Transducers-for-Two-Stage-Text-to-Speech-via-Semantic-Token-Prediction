@@ -39,7 +39,7 @@ class TransducerDataset(torch.utils.data.Dataset):
             meta_lines = f_meta.read().splitlines()
         for line in tqdm.tqdm(meta_lines):
             temp_list = []
-            uttr_id, dataset, spk, emo, gender, pitch, tempo, energy, feat = line.split('/', 8)
+            uttr_id, feat = line.split('/')
             if (dataset == 'VCTK') and((uttr_id[0:4] in dir_name and self.mode == 'valid') or (uttr_id[0:4] not in dir_name and self.mode == 'train') ):
                 transcirpts = []
                 feat_list = feat.strip().split('\t')
