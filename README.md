@@ -4,11 +4,13 @@
 
 This project will be updated slowly.
 
+I'm clutching my master's thesis, this project may be stopped for a month or two.
 # To Do List
 
 - [ ] Resolve the convergence issue in the first stage of model training
 - [ ] Dynamic Batch Training
-- [ ] IPA Phoneset
+- [ ] Utilize the ConvNet for training
+- [x] IPA Phoneset
 - [x] Finish the second stage of model training
 - [x] Finish the token extraction by K-means model
 - [x] Reproduce the model on LibriTTS
