@@ -23,10 +23,15 @@ bash prepare.sh --stage -1 --stop-stage 3
 ```
 
 # 2、Step 2 Run Stage 1 Model
-
+change the workspace
 ```
 cd dynamic_version
-#create the data soft link to the workspace
+```
+create the data soft link to the workspace
+```
 ln -s valle/egs/libritts/data data
+```
+run the stage 1 model
+```
 CUDA_VISIBLE_DEVICES=0 python train_dynamic.py --max-duration 240 --filter-min-duration 0.5 --filter-max-duration 14 --num-buckets 6 --save-every-n 10000
 ```
