@@ -1,4 +1,4 @@
-A code version with reference to valle and k2 code
+A code version with reference to vall-e and k2 code
 
 # 1、Step 1 Data Preprocess
 
@@ -8,10 +8,17 @@ Follow the processing process in vall-e.
 ```
 cp tokenizer.py valle/egs/libritts/bin/tokenizer.py
 cd valle/egs/libritts
-#put the faiss token scp file in here
+```
+put the faiss token scp file in here
+```
 cp xxx.ark xxx.scp ./
-#put the 24k mel scp file in here
+```
+put the 24k mel scp file in here
+```
 cp mels.ark mels.scp ./
+```
+run preprocess pipeline
+```
 bash prepare.sh --stage -1 --stop-stage 3
 ```
 
