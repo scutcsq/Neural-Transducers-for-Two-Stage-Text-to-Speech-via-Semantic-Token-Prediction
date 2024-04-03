@@ -15,7 +15,7 @@ import torch.nn as nn
 from tts_datamodule import TtsDataModule
 # from decoder import Decoder
 # from joiner import Joiner
-from stage1_2 import Stage1Net
+from stage1 import Stage1Net
 from lhotse.cut import Cut
 from lhotse import CutSet
 from lhotse.dataset.sampling.base import CutSampler
