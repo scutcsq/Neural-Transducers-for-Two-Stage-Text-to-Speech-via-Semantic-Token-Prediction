@@ -30,8 +30,8 @@ class TextTokenCollater:
     def __init__(
         self,
         text_tokens: List[str],
-        add_eos: bool = True,
-        add_bos: bool = True,
+        add_eos: bool = False,
+        add_bos: bool = False,
         pad_symbol: str = "<pad>",
         bos_symbol: str = "<bos>",
         eos_symbol: str = "<eos>",
