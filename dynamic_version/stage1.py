@@ -337,7 +337,7 @@ class Stage1Net(nn.Module):
                 lm_only_scale = lm_scale,
                 am_only_scale = am_scale,
                 return_grad = True,
-                reduction = 'sum'
+                reduction = 'none'
             )
         ranges = k2.get_rnnt_prune_ranges(
             px_grad = px_grad,
@@ -360,9 +360,16 @@ class Stage1Net(nn.Module):
                 ranges = ranges,
                 termination_symbol = 0,
                 boundary = boundary,
-                reduction = 'sum'
+                reduction = 'none'
             )
-        
+        simple_loss_is_finite = torch.isfinite(simple_loss)
+        pruned_loss_is_finite = torch.isfinite(pruned_loss)
+        is_finite = simple_loss_is_finite & pruned_loss_is_finite
+        if not torch.all(is_finite):
+            simple_loss = simple_loss[simple_loss_is_finite]
+            pruned_loss = pruned_loss[pruned_loss_is_finite]
+        simple_loss = simple_loss.sum()
+        pruned_loss = pruned_loss.sum()
         
         return simple_loss, pruned_loss
     
